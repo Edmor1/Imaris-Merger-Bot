@@ -38,7 +38,7 @@ from openpyxl.utils import get_column_letter
 
 
 # ---------------------------------------------------------------------------
-# Sheet headers (keep in sync with the existing overview template)
+# Sheet headers
 # ---------------------------------------------------------------------------
 
 DENDRITE_HEADERS = [
@@ -60,7 +60,7 @@ SPINE_HEADERS = [
     "Time", "Type",
 ]
 
-# Column indexes (1-indexed) where numeric data lives -- used to apply the
+# Column indexes (1-indexed) where numeric data lives, used to apply the
 # Imaris light-green fill and 2-decimal number format.
 DENDRITE_NUMERIC_COLS = range(13, 20)   # Min..Count
 SPINE_NUMERIC_COLS = range(6, 13)       # Min..Count
@@ -79,7 +79,7 @@ class ParsedFilename:
 
 # Filename regex: capture the leading text, the first integer, and whatever
 # follows up to the extension. Whitespace, underscores and hyphens are all
-# treated as separators between the three parts.
+# treated as separators between the three parts (bascially allows for more blinded names).
 _FILENAME_RE = re.compile(
     r"""
     ^\s*
@@ -112,7 +112,7 @@ def parse_filename(filename: str) -> ParsedFilename:
 
 
 # ---------------------------------------------------------------------------
-# Sheet lookup (tolerant of case, whitespace, small typos)
+# Sheet lookup (hopefully idiot proof - small types, cases and spaces allowed in sheet name)
 # ---------------------------------------------------------------------------
 
 def _find_sheet(xls_path: Path, target: str) -> str:
@@ -130,7 +130,7 @@ def _find_sheet(xls_path: Path, target: str) -> str:
         idx = candidates.index(matches[0])
         return xl.sheet_names[idx]
     raise ValueError(
-        f"no sheet matching '{target}' (found: {xl.sheet_names})"
+        f"no sheet matching '{target}' (found: {xl.sheet_names})" #if no sheet is found outputs an error
     )
 
 
@@ -255,13 +255,15 @@ def build_spine_rows(xls_path: Path, pf: ParsedFilename) -> list[list[object]]:
 HEADER_FONT = Font(bold=True)
 IMARIS_FILL = PatternFill("solid", fgColor="CCFFCC")
 IMARIS_NUM_FORMAT = "0.00"
+NEW_DENDRITE_FILL = PatternFill("solid", fgColor="FFF2CC")  # pale yellow so each new dendrite stands out more whens scrolling
+ANIMAL_ID_FORMAT = "000"
 
 
 def _init_sheet(ws, headers: list[str]) -> None:
     for col_idx, header in enumerate(headers, start=1):
         cell = ws.cell(row=1, column=col_idx, value=header)
         cell.font = HEADER_FONT
-    # Reasonable default column widths so the header is readable.
+    # Reasonable column widths so the header is readable.
     for col_idx, header in enumerate(headers, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = max(12, len(header) + 2)
 
@@ -299,14 +301,31 @@ def existing_keys(ws) -> set[tuple[str, str]]:
     return keys
 
 
-def write_rows(ws, start_row: int, rows: list[list[object]], numeric_cols: range) -> int:
+def write_rows(ws, start_row: int, rows: list[list[object]], numeric_cols: range,
+               total_cols: int) -> int:
+    """Write rows to the sheet, applying Imaris formatting and highlighting.
+
+    The first row of a batch (rows[0]) is highlighted in pale yellow across
+    all columns to make it visually clear where a new dendrite starts.
+    The Animal ID column (col 1) always gets the "000" display format.
+    """
     current = start_row
-    for row_data in rows:
+    for i, row_data in enumerate(rows):
+        is_first_row_of_dendrite = (i == 0)
         for col_idx, val in enumerate(row_data, start=1):
             cell = ws.cell(row=current, column=col_idx, value=val)
+            # Imaris-style fill + format for numeric data columns
             if col_idx in numeric_cols and isinstance(val, (int, float)):
                 cell.fill = IMARIS_FILL
                 cell.number_format = IMARIS_NUM_FORMAT
+            # Animal ID column always uses "000" format
+            if col_idx == 1:
+                cell.number_format = ANIMAL_ID_FORMAT
+        # Highlight the first row of each dendrite in pale yellow. Apply
+        # AFTER the other fills so it overrides them on this row.
+        if is_first_row_of_dendrite:
+            for col_idx in range(1, total_cols + 1):
+                ws.cell(row=current, column=col_idx).fill = NEW_DENDRITE_FILL
         current += 1
     return current
 
@@ -405,7 +424,8 @@ def merge(output_path: Path, input_folder: Path) -> None:
         else:
             try:
                 rows = build_dendrite_rows(xls_path, pf)
-                dend_row = write_rows(ws_dend, dend_row, rows, DENDRITE_NUMERIC_COLS)
+                dend_row = write_rows(ws_dend, dend_row, rows,
+                                      DENDRITE_NUMERIC_COLS, len(DENDRITE_HEADERS))
                 dend_keys.add((pf.name, pf.dno))
                 summary.dendrites_written += 1
                 summary.dendrite_rows += len(rows)
@@ -421,7 +441,8 @@ def merge(output_path: Path, input_folder: Path) -> None:
         else:
             try:
                 rows = build_spine_rows(xls_path, pf)
-                spine_row = write_rows(ws_spine, spine_row, rows, SPINE_NUMERIC_COLS)
+                spine_row = write_rows(ws_spine, spine_row, rows,
+                                       SPINE_NUMERIC_COLS, len(SPINE_HEADERS))
                 spine_keys.add((pf.name, pf.dno))
                 summary.spines_written += 1
                 summary.spine_rows += len(rows)
